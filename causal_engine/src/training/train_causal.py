@@ -32,6 +32,7 @@ def train(data_path: str, graph_path: str = None, epochs: int = 50, batch_size: 
     val_tensor = torch.tensor(val_df.values).float()
 
     # 2. Structure Learning
+    os.makedirs(os.path.dirname(graph_path), exist_ok=True)
     if graph_path and os.path.exists(graph_path):
         logger.info(f"Loading graph from {graph_path}")
         graph = load_graph(graph_path)

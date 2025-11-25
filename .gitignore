@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.venv/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Distribution / Packaging
+dist/
+build/
+*.egg-info/
+
+# PyTorch
+*.pth
+*.pt
+
+# Artifacts
+artifacts/
+data/
+outputs/
+wandb/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+

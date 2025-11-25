@@ -17,16 +17,13 @@ def learn_graph_from_data(data: pd.DataFrame, alpha: float = 0.05) -> nx.DiGraph
     labels = data.columns.tolist()
     
     # Run PC algorithm
-    # fisherz is the conditional independence test for Gaussian data
     cg = pc(data_np, alpha, fisherz)
     
-    # Convert to NetworkX DiGraph
-    # cg.G is the learned GeneralGraph
-    # We need to convert it. The PC algorithm output might be a CPDAG.
-    # For this system, we will assume we can orient edges or treat undirected as bidirectional for now,
-    # but ideally we want a DAG.
-    
     adj_matrix = cg.G.graph
+    logger.info(f"Adjacency Matrix:\n{adj_matrix}")
+    logger.info(f"Matrix Type: {type(adj_matrix)}")
+    logger.info(f"Element Type: {type(adj_matrix[0,0])}")
+    
     G = nx.DiGraph()
     
     for i, label in enumerate(labels):
@@ -35,20 +32,39 @@ def learn_graph_from_data(data: pd.DataFrame, alpha: float = 0.05) -> nx.DiGraph
     num_nodes = len(labels)
     for i in range(num_nodes):
         for j in range(num_nodes):
-            if adj_matrix[i, j] == 1 and adj_matrix[j, i] == -1: # Directed i -> j
+            if i == j: continue
+            
+            val_ij = adj_matrix[i, j]
+            val_ji = adj_matrix[j, i]
+            
+            # i -> j: tail at i (-1), arrow at j (1)
+            if val_ij == -1 and val_ji == 1: 
+                logger.info(f"Directed Edge {labels[i]} -> {labels[j]}")
                 G.add_edge(labels[i], labels[j])
-            elif adj_matrix[i, j] == -1 and adj_matrix[j, i] == 1: # Directed j -> i
+            # j -> i: arrow at i (1), tail at j (-1)
+            elif val_ij == 1 and val_ji == -1: 
+                logger.info(f"Directed Edge {labels[j]} -> {labels[i]}")
                 G.add_edge(labels[j], labels[i])
-            # Note: undirected edges (1, 1) or (-1, -1) depending on implementation are ambiguous
-            # Here we simplify for the 'production-ready' goal by taking directed edges found
+            # Undirected i -- j: tail at i (-1), tail at j (-1)
+            # OR arrow at i (1), arrow at j (1) - depends on PC implementation
+            elif (val_ij == -1 and val_ji == -1) or (val_ij == 1 and val_ji == 1):
+                logger.info(f"Undirected Edge {labels[i]} -- {labels[j]} (vals: {val_ij}, {val_ji})")
+                # Heuristic: Orient i -> j if i < j to avoid cycles and double edges
+                if i < j:
+                    G.add_edge(labels[i], labels[j])
+                    logger.info(f"Orienting {labels[i]} -> {labels[j]}")
+                else:
+                     # If we already added j -> i (when we were at j, i), good.
+                     # If i > j, we rely on the j loop to have added j -> i.
+                     pass
             
     logger.info(f"Graph learned with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges.")
+    G = enforce_acyclicity(G)
     return G
 
 def enforce_acyclicity(G: nx.DiGraph) -> nx.DiGraph:
     """
     Removes edges to enforce acyclicity if the graph has cycles.
-    Uses a simple heuristic: remove edge with lowest weight (if weighted) or arbitrary in cycle.
     """
     if nx.is_directed_acyclic_graph(G):
         return G
@@ -69,6 +85,8 @@ def enforce_acyclicity(G: nx.DiGraph) -> nx.DiGraph:
     return G
 
 def save_graph(G: nx.DiGraph, path: str):
+    import os
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'wb') as f:
         pickle.dump(G, f)
     logger.info(f"Graph saved to {path}")
@@ -78,4 +96,3 @@ def load_graph(path: str) -> nx.DiGraph:
         G = pickle.load(f)
     logger.info(f"Graph loaded from {path}")
     return G
-

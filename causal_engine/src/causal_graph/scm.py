@@ -5,6 +5,14 @@ import pandas as pd
 import numpy as np
 from typing import Dict, Any, List, Optional
 
+class RootNode(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.mean = nn.Parameter(torch.randn(1))
+        
+    def forward(self, x=None):
+        return self.mean
+
 class SCM(nn.Module):
     def __init__(self, graph: nx.DiGraph, hidden_dim: int = 64):
         super().__init__()
@@ -17,9 +25,6 @@ class SCM(nn.Module):
         for node in self.nodes:
             parents = list(graph.predecessors(node))
             input_dim = len(parents)
-            # Model models P(Node | Parents)
-            # For a continuous variable, we predict the mean (and optionally variance, but simplified to mean here)
-            # If input_dim is 0, it's a root node, modeled as a learnable parameter or distribution
             if input_dim > 0:
                 self.models[node] = nn.Sequential(
                     nn.Linear(input_dim, hidden_dim),
@@ -29,16 +34,12 @@ class SCM(nn.Module):
                     nn.Linear(hidden_dim, 1)
                 )
             else:
-                # Root node: simplified as a learnable bias for mean (assuming normalized data ~ N(0,1) initially)
-                # In a real generative model, this would be a sampler.
-                # Here we implement it as a simple parameter for the mean
-                self.models[node] = nn.Parameter(torch.randn(1))
+                # Root node
+                self.models[node] = RootNode()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass essentially computes the likelihood or error.
-        But SCMs usually generate data.
-        This method predicts values given parents in the provided x (teacher forcing).
+        Forward pass predicts values given parents in the provided x (teacher forcing).
         """
         predictions = {}
         for node in self.nodes:
@@ -49,7 +50,7 @@ class SCM(nn.Module):
                 predictions[node] = self.models[node](parent_vals)
             else:
                 # Expand parameter to batch size
-                predictions[node] = self.models[node].expand(x.shape[0], 1)
+                predictions[node] = self.models[node]().expand(x.shape[0], 1)
         
         # Stack predictions in correct order
         output = torch.cat([predictions[n] for n in self.nodes], dim=1)
@@ -60,8 +61,6 @@ class SCM(nn.Module):
         Ancestral sampling.
         """
         samples = torch.zeros((n_samples, len(self.nodes)))
-        
-        # We need to store values by node name to lookup parents easily
         sample_dict = {}
         
         with torch.no_grad():
@@ -69,17 +68,14 @@ class SCM(nn.Module):
                 parents = list(self.graph.predecessors(node))
                 if len(parents) > 0:
                     parent_vals = torch.cat([sample_dict[p] for p in parents], dim=1)
-                    # Add noise for probabilistic nature
                     mean = self.models[node](parent_vals)
-                    noise = torch.randn_like(mean) * 0.1 # Assuming small noise variance
+                    noise = torch.randn_like(mean) * 0.1
                     sample_dict[node] = mean + noise
                 else:
-                    # Root node
-                    mean = self.models[node].expand(n_samples, 1)
+                    mean = self.models[node]().expand(n_samples, 1)
                     noise = torch.randn_like(mean) * 0.1
                     sample_dict[node] = mean + noise
                     
-                # Place in output tensor
                 idx = self.node_to_idx[node]
                 samples[:, idx] = sample_dict[node].squeeze()
                 
@@ -95,7 +91,6 @@ class SCM(nn.Module):
         with torch.no_grad():
             for node in self.sorted_nodes:
                 if node in intervention_dict:
-                    # Hard intervention: set value directly
                     val = torch.tensor(intervention_dict[node]).float().expand(n_samples, 1)
                     sample_dict[node] = val
                 else:
@@ -106,7 +101,7 @@ class SCM(nn.Module):
                         noise = torch.randn_like(mean) * 0.1
                         sample_dict[node] = mean + noise
                     else:
-                        mean = self.models[node].expand(n_samples, 1)
+                        mean = self.models[node]().expand(n_samples, 1)
                         noise = torch.randn_like(mean) * 0.1
                         sample_dict[node] = mean + noise
                 
@@ -116,14 +111,6 @@ class SCM(nn.Module):
         return samples
 
     def counterfactual(self, observation: torch.Tensor, intervention_dict: Dict[str, float]) -> torch.Tensor:
-        """
-        Abduction-Action-Prediction (Simplified).
-        1. Abduction: Infer noise from observation (inverse of structural equation).
-           Since our functions are Neural Networks (non-invertible easily), we approximate noise 
-           as the residual: U = X - f(Parents).
-        2. Action: Modify graph (do-intervention).
-        3. Prediction: Re-compute values using inferred noise and intervention.
-        """
         # 1. Abduction
         noises = {}
         obs_dict = {node: observation[0, i].view(1, 1) for i, node in enumerate(self.nodes)}
@@ -136,7 +123,7 @@ class SCM(nn.Module):
                     pred_mean = self.models[node](parent_vals)
                     noises[node] = obs_dict[node] - pred_mean
                 else:
-                    pred_mean = self.models[node].expand(1, 1)
+                    pred_mean = self.models[node]().expand(1, 1)
                     noises[node] = obs_dict[node] - pred_mean
 
         # 2. & 3. Action & Prediction
@@ -153,13 +140,12 @@ class SCM(nn.Module):
                     if len(parents) > 0:
                         parent_vals = torch.cat([cf_dict[p] for p in parents], dim=1)
                         mean = self.models[node](parent_vals)
-                        cf_dict[node] = mean + noises[node] # Add the abducted noise
+                        cf_dict[node] = mean + noises[node]
                     else:
-                        mean = self.models[node].expand(1, 1)
+                        mean = self.models[node]().expand(1, 1)
                         cf_dict[node] = mean + noises[node]
                 
                 idx = self.node_to_idx[node]
                 cf_samples[:, idx] = cf_dict[node].squeeze()
         
         return cf_samples
-
