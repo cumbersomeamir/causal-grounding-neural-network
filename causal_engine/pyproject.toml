@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "causal_engine"
+version = "0.1.0"
+description = "A production-ready causal reasoning system"
+authors = [
+    {name = "AI Architect", email = "architect@example.com"},
+]
+dependencies = [
+    "torch",
+    "numpy",
+    "pandas",
+    "scikit-learn",
+    "networkx",
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "causal-learn",
+    "pyyaml",
+    "tqdm",
+    "wandb"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+

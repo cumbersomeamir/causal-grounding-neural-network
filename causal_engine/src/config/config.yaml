@@ -1,0 +1,25 @@
+project:
+  name: "CausalReasoningSystem"
+  version: "0.1.0"
+
+data:
+  path: "data/sample_data.csv"  # Placeholder
+  target_col: "target"
+  test_size: 0.2
+  val_size: 0.1
+
+model:
+  hidden_dim: 64
+  latent_dim: 16
+  learning_rate: 0.001
+  batch_size: 32
+  epochs: 50
+
+graph:
+  algorithm: "pc"  # Options: pc, notears, ges
+  alpha: 0.05      # Significance level for PC/FCI
+
+service:
+  host: "0.0.0.0"
+  port: 8000
+
