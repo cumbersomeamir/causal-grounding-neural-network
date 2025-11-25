@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 import uvicorn
 import torch
 import pickle
@@ -7,22 +7,29 @@ import networkx as nx
 from typing import List
 import os
 
-from .api import PredictionRequest, InterventionRequest, CounterfactualRequest, GraphResponse, SampleRequest
+from .api import (
+    PredictionRequest, InterventionRequest, CounterfactualRequest, 
+    GraphResponse, SampleRequest, ActiveLearningRequest, AdaptRequest
+)
 from ..causal_graph.scm import SCM
 from ..causal_graph.structure_learning import load_graph
-from ..causal_graph.interventions import do_intervention
+from ..causal_graph.discovery.notears import DeepCausalDiscovery
+from ..active_learning.agent import ActiveCausalAgent
+from ..meta_learning.maml import MetaSCM
 from ..utils.logger import get_logger
 
-app = FastAPI(title="Causal Engine API", description="Microservice for Causal Inference")
+app = FastAPI(title="Causal AGI API", description="Advanced Causal Reasoning & Discovery Service")
 logger = get_logger(__name__)
 
-# Global state for loaded models
+# Global state
 scm_model = None
+meta_scm = None
 preprocessor = None
+active_agent = None
 
 @app.on_event("startup")
 def load_models():
-    global scm_model, preprocessor
+    global scm_model, meta_scm, preprocessor, active_agent
     try:
         graph_path = "artifacts/graph.pkl"
         model_path = "artifacts/scm_model.pth"
@@ -33,97 +40,100 @@ def load_models():
             scm_model = SCM(graph)
             scm_model.load_state_dict(torch.load(model_path))
             scm_model.eval()
-            logger.info("SCM Model loaded successfully.")
-        else:
-            logger.warning("Model artifacts not found. Please train the model first.")
             
+            # Initialize Meta SCM
+            meta_scm = MetaSCM(scm_model)
+            
+            logger.info("SCM and Meta-Learner loaded successfully.")
+        
         if os.path.exists(preprocessor_path):
             with open(preprocessor_path, "rb") as f:
                 preprocessor = pickle.load(f)
+                
+        # Initialize Active Agent
+        # We use DeepCausalDiscovery as the engine
+        config = {'hidden_dim': 64, 'max_iter': 50}
+        active_agent = ActiveCausalAgent(DeepCausalDiscovery, config)
+        
     except Exception as e:
         logger.error(f"Error loading models: {e}")
 
 @app.get("/health")
 def health_check():
-    return {"status": "healthy"}
+    return {"status": "healthy", "models_loaded": scm_model is not None}
 
 @app.get("/graph", response_model=GraphResponse)
 def get_graph():
     if scm_model is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
-    
     nodes = list(scm_model.graph.nodes)
     edges = list(scm_model.graph.edges)
     return {"nodes": nodes, "edges": edges}
+
+@app.post("/active/propose")
+def propose_experiment(request: ActiveLearningRequest):
+    """
+    Uses the Active Agent to propose the next most informative intervention.
+    """
+    if active_agent is None:
+        raise HTTPException(status_code=503, detail="Active Agent not initialized")
+        
+    df = pd.DataFrame(request.current_data)
+    
+    # Update beliefs (this might take time, better in background for real prod)
+    active_agent.update_belief(df)
+    
+    target_node = active_agent.propose_intervention()
+    
+    if target_node:
+        return {
+            "message": "Uncertainty detected.",
+            "proposal": f"Perform intervention do({target_node}=x)",
+            "target_node": target_node,
+            "reason": "High variance in edge existence probabilities."
+        }
+    else:
+        return {
+            "message": "Graph structure is stable.",
+            "proposal": None
+        }
+
+@app.post("/meta/adapt")
+def adapt_model(request: AdaptRequest):
+    """
+    Adapts the SCM to a new environment (Few-Shot Learning).
+    """
+    if meta_scm is None:
+        raise HTTPException(status_code=503, detail="Meta-Learner not loaded")
+        
+    df = pd.DataFrame(request.new_data)
+    
+    # Preprocess
+    if preprocessor:
+        df_scaled = preprocessor.transform(df)
+        tensor = torch.tensor(df_scaled.values).float()
+    else:
+        tensor = torch.tensor(df.values).float()
+        
+    # Reptile Step (or just simple adaptation returning new model state)
+    # Here we update the base model for the session (Online Learning)
+    # Or return a temporary model ID. For simplicity, we update base.
+    
+    meta_scm.reptile_step(tensor, k=request.steps)
+    
+    return {"message": "Model adapted to new environment.", "steps": request.steps}
 
 @app.post("/intervene")
 def intervene(request: InterventionRequest):
     if scm_model is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
-    
     try:
         samples = scm_model.intervene(request.intervention, request.n_samples)
-        # Inverse transform if preprocessor is available? 
-        # For simplicity, returning scaled values or raw values as produced by SCM
-        # In production, we should inverse transform to original scale.
-        
         result = pd.DataFrame(samples.numpy(), columns=scm_model.nodes).to_dict(orient="records")
         return result
     except Exception as e:
         logger.error(f"Intervention error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/counterfactual")
-def counterfactual(request: CounterfactualRequest):
-    if scm_model is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
-    
-    try:
-        # Parse observation
-        obs_df = pd.DataFrame([request.observation])
-        # Transform using preprocessor if needed - assuming input is raw
-        if preprocessor:
-            obs_transformed = preprocessor.transform(obs_df)
-            obs_tensor = torch.tensor(obs_transformed.values).float()
-        else:
-            obs_tensor = torch.tensor(obs_df.values).float()
-            
-        # For internal SCM call, we need tensor [1, n_nodes]
-        # The SCM counterfactual method handles the rest
-        # Note: Preprocessor scaling might complicate "do" values if they are provided in raw scale.
-        # Ideally we transform intervention values too.
-        
-        # Simplified: Assuming raw inputs match trained scale or user handles scaling for now.
-        
-        cf_tensor = scm_model.counterfactual(obs_tensor, request.intervention)
-        
-        # Inverse transform for output
-        if preprocessor:
-            # We need to use inverse_transform but preprocessor might return df or array
-            # Preprocessor wrapper in this codebase returns df usually but internal scaler uses array
-            cf_array = preprocessor.scaler.inverse_transform(cf_tensor.numpy())
-            result = pd.DataFrame(cf_array, columns=scm_model.nodes).to_dict(orient="records")
-        else:
-            result = pd.DataFrame(cf_tensor.numpy(), columns=scm_model.nodes).to_dict(orient="records")
-            
-        return result
-    except Exception as e:
-        logger.error(f"Counterfactual error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/sample")
-def sample(request: SampleRequest):
-    if scm_model is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
-    
-    samples = scm_model.sample(request.n_samples)
-    if preprocessor:
-        samples_array = preprocessor.scaler.inverse_transform(samples.numpy())
-        result = pd.DataFrame(samples_array, columns=scm_model.nodes).to_dict(orient="records")
-    else:
-        result = pd.DataFrame(samples.numpy(), columns=scm_model.nodes).to_dict(orient="records")
-    return result
-
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
-

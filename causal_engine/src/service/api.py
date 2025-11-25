@@ -19,3 +19,10 @@ class GraphResponse(BaseModel):
 class SampleRequest(BaseModel):
     n_samples: int = 100
 
+class ActiveLearningRequest(BaseModel):
+    current_data: List[Dict[str, float]]
+    n_ensemble: int = 5
+
+class AdaptRequest(BaseModel):
+    new_data: List[Dict[str, float]]
+    steps: int = 5

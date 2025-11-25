@@ -4,18 +4,19 @@ import pandas as pd
 import numpy as np
 import argparse
 import os
-import pickle # Added missing import
+import pickle
 from tqdm import tqdm
 from ..data.loaders import DataLoader, split_data
 from ..data.preprocess import Preprocessor
 from ..causal_graph.structure_learning import learn_graph_from_data, save_graph, load_graph
+from ..causal_graph.discovery.notears import DeepCausalDiscovery
 from ..causal_graph.scm import SCM
 from ..utils.logger import get_logger
 from ..utils.seed import set_seed
 
 logger = get_logger(__name__)
 
-def train(data_path: str, graph_path: str = None, epochs: int = 50, batch_size: int = 32, lr: float = 1e-3):
+def train(data_path: str, graph_path: str = None, epochs: int = 50, batch_size: int = 32, lr: float = 1e-3, algo: str = 'pc'):
     set_seed()
     
     # 1. Data Loading
@@ -37,8 +38,16 @@ def train(data_path: str, graph_path: str = None, epochs: int = 50, batch_size: 
         logger.info(f"Loading graph from {graph_path}")
         graph = load_graph(graph_path)
     else:
-        logger.info("Learning graph structure...")
-        graph = learn_graph_from_data(train_df)
+        logger.info(f"Learning graph structure using {algo}...")
+        if algo == 'notears':
+            # Use the production-grade Deep Discovery
+            discovery = DeepCausalDiscovery({'hidden_dim': 64, 'max_iter': 100})
+            discovery.fit(train_df)
+            graph = discovery.get_graph()
+        else:
+            # Use Standard PC
+            graph = learn_graph_from_data(train_df)
+            
         if graph_path:
             save_graph(graph, graph_path)
 
@@ -88,7 +97,7 @@ if __name__ == "__main__":
     parser.add_argument("--data_path", type=str, required=True, help="Path to data file")
     parser.add_argument("--graph_path", type=str, default="artifacts/graph.pkl", help="Path to save/load graph")
     parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--algo", type=str, default="pc", choices=["pc", "notears"], help="Discovery algorithm")
     args = parser.parse_args()
     
-    train(args.data_path, args.graph_path, args.epochs)
-
+    train(args.data_path, args.graph_path, args.epochs, algo=args.algo)
